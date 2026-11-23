@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="台股與美股每日技術分析儀表板">
+  <title>每日市場觀察｜Trading Agent</title>
+  <style>
+    /* 使用系統字型，讓 Android 與桌面瀏覽器都能正常顯示繁體中文。 */
+    :root { color-scheme: light; --bg:#f4f6fa; --card:#fff; --ink:#172033; --muted:#657086; --line:#e5e9f0; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif; }
+    header { padding:28px 18px 20px; background:#14213d; color:#fff; }
+    header .wrap, main { max-width:1000px; margin:auto; }
+    h1 { margin:0 0 8px; font-size:25px; }
+    header p { margin:0; color:#d8e0ee; font-size:14px; }
+    main { padding:18px; }
+    .meta,.notice { color:var(--muted); font-size:13px; line-height:1.6; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
+    button { border:1px solid var(--line); background:#fff; padding:9px 13px; border-radius:10px; font-size:14px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:13px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:15px; padding:16px; box-shadow:0 3px 12px #18233a08; }
+    .top { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .name { font-weight:700; font-size:17px; }
+    .ticker,.small { color:var(--muted); font-size:12px; }
+    .signal { border-radius:999px; padding:5px 10px; font-size:12px; font-weight:700; white-space:nowrap; }
+    .bull { background:#e6f6ed; color:#137344; }
+    .neutral { background:#eef1f6; color:#46536a; }
+    .bear { background:#fdeaea; color:#a42b2b; }
+    .price { font-size:25px; font-weight:750; margin:15px 0 2px; }
+    .metrics { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:15px 0; }
+    .metric { background:#f7f8fb; border-radius:10px; padding:9px; }
+    .metric span { display:block; color:var(--muted); font-size:11px; }
+    .metric strong { display:block; margin-top:3px; font-size:14px; }
+    ul { padding-left:18px; margin-bottom:0; font-size:13px; line-height:1.7; }
+    .error { background:#fff4e5; border:1px solid #f2d3a5; border-radius:12px; padding:12px; margin:12px 0; }
+    footer { margin:22px 0; color:var(--muted); font-size:12px; line-height:1.7; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>每日市場觀察</h1>
+    <p>台股 × 美股｜技術指標分析｜僅供研究，不會自動下單</p>
+  </div>
+</header>
+<main>
+  <div id="updated" class="meta">正在讀取最新報告……</div>
+  <div class="toolbar">
+    <button onclick="loadReport()">重新整理</button>
+    <button onclick="filterMarket('全部')">全部市場</button>
+    <button onclick="filterMarket('台股')">台股</button>
+    <button onclick="filterMarket('美股')">美股</button>
+  </div>
+  <div id="errors"></div>
+  <section id="cards" class="grid"></section>
+  <footer>
+    本頁使用歷史日線資料及固定技術規則，並非大型語言模型的自主判斷。
+    行情來源為 Yahoo Finance，可能延遲、缺漏或修正。
+    RSI、均線與 MACD 均有落後性，不能單獨作為買賣依據。
+    不構成投資建議。
+  </footer>
+</main>
+<script>
+  /* 保存報告資料與目前市場篩選條件。 */
+  let allResults = [];
+  let currentFilter = "全部";
+
+  /* 安全建立文字節點，避免把外部資料當成 HTML 執行。 */
+  function safeText(value) {
+    return String(value ?? "");
+  }
+
+  function renderCards() {
+    const container = document.getElementById("cards");
+    container.innerHTML = "";
+
+    const visible = allResults.filter(item =>
+      currentFilter === "全部" || item.market === currentFilter
+    );
+
+    if (!visible.length) {
+      container.textContent = "目前沒有可顯示的資料。";
+      return;
+    }
+
+    visible.forEach(item => {
+      const card = document.createElement("article");
+      card.className = "card";
+
+      const signalClass = item.signal === "偏多" ? "bull" :
+                          item.signal === "偏空" ? "bear" : "neutral";
+
+      const top = document.createElement("div");
+      top.className = "top";
+
+      const titleBox = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = safeText(item.name);
+      const ticker = document.createElement("div");
+      ticker.className = "ticker";
+      ticker.textContent = `${safeText(item.market)}｜${safeText(item.ticker)}`;
+      titleBox.append(name, ticker);
+
+      const badge = document.createElement("span");
+      badge.className = `signal ${signalClass}`;
+      badge.textContent = safeText(item.signal);
+      top.append(titleBox, badge);
+
+      const price = document.createElement("div");
+      price.className = "price";
+      price.textContent = safeText(item.price);
+
+      const change = document.createElement("div");
+      change.className = "small";
+      change.textContent = `日漲跌 ${item.change_pct}%｜資料日期 ${safeText(item.data_date)}`;
+
+      const metrics = document.createElement("div");
+      metrics.className = "metrics";
+      [
+        ["RSI 14", item.rsi14],
+        ["SMA 20", item.sma20],
+        ["SMA 50", item.sma50],
+        ["訊號分數", item.score]
+      ].forEach(([label, value]) => {
+        const box = document.createElement("div");
+        box.className = "metric";
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        const strong = document.createElement("strong");
+        strong.textContent = safeText(value);
+        box.append(caption, strong);
+        metrics.append(box);
+      });
+
+      const summary = document.createElement("p");
+      summary.className = "small";
+      summary.textContent = safeText(item.summary);
+
+      const list = document.createElement("ul");
+      (item.reasons || []).forEach(reason => {
+        const li = document.createElement("li");
+        li.textContent = safeText(reason);
+        list.append(li);
+      });
+
+      card.append(top, price, change, metrics, summary, list);
+      container.append(card);
+    });
+  }
+
+  /* 依照使用者點選的市場篩選卡片。 */
+  function filterMarket(market) {
+    currentFilter = market;
+    renderCards();
+  }
+
+  /* 從同一個網站目錄載入每日 JSON 報告。 */
+  async function loadReport() {
+    const updated = document.getElementById("updated");
+    const errors = document.getElementById("errors");
+    updated.textContent = "正在更新資料……";
+    errors.innerHTML = "";
+
+    try {
+      const response = await fetch(`report.json?t=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("找不到報告檔，請確認每日工作流程已成功執行。");
+
+      const report = await response.json();
+      allResults = report.results || [];
+
+      const date = report.generated_at
+        ? new Date(report.generated_at).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })
+        : "未知";
+      updated.textContent = `報告更新時間：${date}（台灣時間）`;
+
+      if (report.errors && report.errors.length) {
+        const box = document.createElement("div");
+        box.className = "error";
+        box.textContent = "部分股票資料取得失敗：" +
+          report.errors.map(item => `${item.ticker}: ${item.error}`).join("；");
+        errors.append(box);
+      }
+
+      renderCards();
+    } catch (error) {
+      updated.textContent = "尚未取得分析報告";
+      const box = document.createElement("div");
+      box.className = "error";
+      box.textContent = error.message;
+      errors.append(box);
+    }
+  }
+
+  loadReport();
+</script>
+</body>
+</html>
