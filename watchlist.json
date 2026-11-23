@@ -1,0 +1,29 @@
+{
+  "watchlist": [
+    {
+      "ticker": "2330.TW",
+      "name": "台積電",
+      "market": "台股"
+    },
+    {
+      "ticker": "0050.TW",
+      "name": "元大台灣50",
+      "market": "台股"
+    },
+    {
+      "ticker": "NVDA",
+      "name": "NVIDIA",
+      "market": "美股"
+    },
+    {
+      "ticker": "AAPL",
+      "name": "Apple",
+      "market": "美股"
+    },
+    {
+      "ticker": "SPY",
+      "name": "SPDR S&P 500 ETF",
+      "market": "美股"
+    }
+  ]
+}
