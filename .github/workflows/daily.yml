@@ -1,0 +1,59 @@
+# 每日自動分析工作流程：下載行情、計算指標、推播通知、更新網頁。
+name: 每日台股美股分析
+
+on:
+  # 台灣時間平日 15:43 執行（UTC 07:43），避開整點尖峰。
+  schedule:
+    - cron: "43 7 * * 1-5"
+  # 允許使用者在 GitHub Actions 頁面手動啟動。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 取得儲存庫中的程式與網頁。
+      - name: 下載專案
+        uses: actions/checkout@v4
+
+      # 安裝 Python 執行環境。
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 安裝分析程式需要的套件。
+      - name: 安裝依賴套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 執行每日行情分析；Telegram Secrets 可選填。
+      - name: 執行市場分析
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python analyze.py
+
+      # 將網頁及最新 JSON 報告部署到 GitHub Pages。
+      - name: 設定 GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上傳網站檔案
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: "./site"
+
+      - name: 發布網站
+        id: deployment
+        uses: actions/deploy-pages@v4
