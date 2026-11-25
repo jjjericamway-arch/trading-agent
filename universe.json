@@ -1,0 +1,73 @@
+
+{
+  "description": "Trading Agent 台股與美股自主掃描股票池",
+  "version": 1,
+  "markets": {
+    "tw_stocks": {
+      "name": "台股個股",
+      "symbols": [
+        "2330.TW",
+        "2317.TW",
+        "2454.TW",
+        "2308.TW",
+        "2382.TW",
+        "2303.TW",
+        "2881.TW",
+        "2882.TW",
+        "2891.TW",
+        "3711.TW"
+      ]
+    },
+    "tw_etfs": {
+      "name": "台股 ETF",
+      "symbols": [
+        "0050.TW",
+        "0056.TW",
+        "006208.TW",
+        "00878.TW",
+        "00919.TW",
+        "00713.TW",
+        "00929.TW",
+        "00679B.TW",
+        "00687B.TW",
+        "00940.TW"
+      ]
+    },
+    "us_stocks": {
+      "name": "美股個股",
+      "symbols": [
+        "NVDA",
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "META",
+        "TSLA",
+        "AVGO",
+        "AMD",
+        "BRK-B"
+      ]
+    },
+    "us_etfs": {
+      "name": "美股 ETF",
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "DIA",
+        "IWM",
+        "VTI",
+        "VOO",
+        "SCHD",
+        "TLT",
+        "GLD",
+        "XLK"
+      ]
+    }
+  },
+  "scan_settings": {
+    "enabled": true,
+    "daily_candidate_limit": 10,
+    "minimum_history_days": 120,
+    "exclude_missing_data": true
+  }
+}
