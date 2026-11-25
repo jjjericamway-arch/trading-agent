@@ -1,19 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Trading Agent 免費入門版
-功能：
-1. 從 Yahoo Finance 取得台股與美股日線資料。
-2. 計算 SMA、RSI、MACD 與成交量變化。
-3. 依照固定、可重現的規則產生技術面觀察標籤。
-4. 輸出繁體中文 JSON 報告給網頁儀表板讀取。
-5. 如設定 Telegram Secrets，發送每日摘要通知。
-
-重要限制：
-- 本程式是規則式技術分析工具，不是能自主推理的 LLM Agent。
-- Yahoo Finance/yfinance 資料可能延遲、中斷或修正。
-- 訊號僅供研究，不構成投資建議，也不會下單。
+Trading Agent 自主掃描引擎第一版
+讀取 universe.json 與 watchlist.json，分析行情、排序候選標的，
+輸出 site/report.json，並在設定 Telegram Secrets 時發送摘要。
+本工具使用固定技術規則，不會自動下單，也不構成投資建議。
 """
-
 from __future__ import annotations
 
 import json
@@ -26,17 +17,52 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 
+# 以程式檔案位置定位專案路徑，避免雲端執行目錄不同造成錯誤。
 ROOT = Path(__file__).resolve().parent
 SITE_DIR = ROOT / "site"
+UNIVERSE_FILE = ROOT / "universe.json"
 WATCHLIST_FILE = ROOT / "watchlist.json"
 REPORT_FILE = SITE_DIR / "report.json"
 
 
-def load_watchlist() -> list[dict]:
-    """讀取使用者設定的股票清單。"""
-    with WATCHLIST_FILE.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    return data.get("watchlist", [])
+def read_json(path: Path) -> dict:
+    """讀取 JSON 設定檔，檔案缺漏時明確回報錯誤。"""
+    if not path.exists():
+        raise FileNotFoundError(f"找不到設定檔：{path.name}")
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def load_scan_items() -> tuple[list[dict], int]:
+    """合併自主股票池與個人觀察清單，並依 ticker 去除重複項目。"""
+    universe = read_json(UNIVERSE_FILE)
+    watchlist = read_json(WATCHLIST_FILE)
+    items = {}
+
+    # 讀取台股、美股個股與 ETF 分類。
+    for category, details in universe.get("markets", {}).items():
+        market_name = details.get("name", category)
+        for symbol in details.get("symbols", []):
+            ticker = str(symbol).strip().upper()
+            if ticker:
+                items[ticker] = {
+                    "ticker": ticker, "name": ticker,
+                    "market": market_name, "source": "自主掃描"
+                }
+
+    # 個人觀察清單若有相同代號，保留使用者自訂名稱與市場資訊。
+    for entry in watchlist.get("watchlist", []):
+        ticker = str(entry.get("ticker", "")).strip().upper()
+        if ticker:
+            items[ticker] = {
+                "ticker": ticker,
+                "name": entry.get("name", ticker),
+                "market": entry.get("market", "個人觀察清單"),
+                "source": "個人觀察"
+            }
+
+    limit = int(universe.get("scan_settings", {}).get("daily_candidate_limit", 10))
+    return list(items.values()), max(1, limit)
 
 
 def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -44,195 +70,27 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-
-    # 避免除以零造成無限值。
-    relative_strength = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = 100 - (100 / (1 + relative_strength))
-
-    # 若期間內完全沒有下跌，RSI 以 100 表示。
-    rsi = rsi.fillna(100)
-    return rsi
+    # 避免除以零；期間內完全沒有下跌時以 RSI 100 表示。
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    return (100 - 100 / (1 + rs)).fillna(100)
 
 
-def fetch_and_analyze(item: dict) -> dict:
-    """下載單一股票行情並產生技術面觀察結果。"""
+def analyze_one(item: dict) -> dict:
+    """下載單一標的日線資料，計算指標與規則式評分。"""
     ticker = item["ticker"]
-    name = item.get("name", ticker)
-    market = item.get("market", "未分類")
+    data = yf.Ticker(ticker).history(period="9mo", interval="1d", auto_adjust=True)
+    if data.empty:
+        raise ValueError("沒有可用行情資料")
 
-    history = yf.Ticker(ticker).history(period="9mo", interval="1d", auto_adjust=True)
+    # 檢查必要欄位並移除缺漏列。
+    columns = ["Close", "High", "Low", "Volume"]
+    missing = [column for column in columns if column not in data.columns]
+    if missing:
+        raise ValueError(f"缺少行情欄位：{', '.join(missing)}")
+    data = data[columns].dropna().copy()
+    if len(data) < 60:
+        raise ValueError("可用歷史資料不足 60 個交易日")
 
-    if history.empty or len(history) < 60:
-        raise ValueError(f"{ticker} 可用歷史資料不足")
-
-    # 僅保留計算需要的欄位，並清除缺漏資料。
-    history = history[["Close", "Volume"]].dropna().copy()
-    close = history["Close"]
-    volume = history["Volume"]
-
-    # 計算常用技術指標。
-    history["SMA20"] = close.rolling(20).mean()
-    history["SMA50"] = close.rolling(50).mean()
-    history["RSI14"] = calculate_rsi(close, 14)
-
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    history["MACD"] = ema12 - ema26
-    history["MACD_signal"] = history["MACD"].ewm(span=9, adjust=False).mean()
-    history["Volume20"] = volume.rolling(20).mean()
-
-    latest = history.iloc[-1]
-    previous = history.iloc[-2]
-
-    # 以固定規則計分，避免讓語言模型直接決定交易訊號。
-    score = 0
-    reasons = []
-
-    if latest["Close"] > latest["SMA20"]:
-        score += 1
-        reasons.append("收盤價高於 20 日均線")
-    else:
-        score -= 1
-        reasons.append("收盤價低於 20 日均線")
-
-    if latest["SMA20"] > latest["SMA50"]:
-        score += 1
-        reasons.append("20 日均線高於 50 日均線")
-    else:
-        score -= 1
-        reasons.append("20 日均線低於 50 日均線")
-
-    if latest["MACD"] > latest["MACD_signal"]:
-        score += 1
-        reasons.append("MACD 高於訊號線")
-    else:
-        score -= 1
-        reasons.append("MACD 低於訊號線")
-
-    rsi_value = float(latest["RSI14"])
-    if 50 <= rsi_value <= 70:
-        score += 1
-        reasons.append("RSI 位於 50 至 70 區間")
-    elif rsi_value >= 75:
-        score -= 1
-        reasons.append("RSI 偏高，留意短線過熱")
-    elif rsi_value < 30:
-        reasons.append("RSI 偏低，留意超賣與反彈風險")
-    else:
-        reasons.append("RSI 尚未呈現明確強勢")
-
-    if pd.notna(latest["Volume20"]) and latest["Volume20"] > 0:
-        if latest["Volume"] > latest["Volume20"] * 1.5 and latest["Close"] > previous["Close"]:
-            score += 1
-            reasons.append("上漲伴隨成交量高於 20 日均量 1.5 倍")
-        else:
-            reasons.append("成交量未出現明顯放大上漲")
-
-    if score >= 3:
-        label = "偏多"
-        summary = "多項技術條件偏向正向，仍須留意價格回檔與市場風險。"
-    elif score <= -2:
-        label = "偏空"
-        summary = "多項技術條件偏弱，應留意趨勢延續及反轉風險。"
-    else:
-        label = "中性"
-        summary = "目前訊號方向不一致，建議持續觀察。"
-
-    # 日期保留行情資料原始索引日期。
-    market_date = history.index[-1].strftime("%Y-%m-%d")
-    previous_close = float(previous["Close"])
-    last_close = float(latest["Close"])
-    change_pct = ((last_close / previous_close) - 1) * 100 if previous_close else 0
-
-    return {
-        "ticker": ticker,
-        "name": name,
-        "market": market,
-        "data_date": market_date,
-        "price": round(last_close, 3),
-        "change_pct": round(change_pct, 2),
-        "sma20": round(float(latest["SMA20"]), 3),
-        "sma50": round(float(latest["SMA50"]), 3),
-        "rsi14": round(rsi_value, 2),
-        "macd": round(float(latest["MACD"]), 4),
-        "macd_signal": round(float(latest["MACD_signal"]), 4),
-        "volume": int(latest["Volume"]),
-        "score": score,
-        "signal": label,
-        "summary": summary,
-        "reasons": reasons
-    }
-
-
-def send_telegram_message(message: str) -> None:
-    """使用 Telegram Bot API 發送文字通知；未設定 Secrets 時自動略過。"""
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    if not token or not chat_id:
-        print("未設定 Telegram Secrets，略過通知。")
-        return
-
-    api_url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": message
-    }).encode("utf-8")
-
-    request = urllib.request.Request(api_url, data=payload, method="POST")
-    with urllib.request.urlopen(request, timeout=20) as response:
-        if response.status != 200:
-            raise RuntimeError("Telegram 通知傳送失敗")
-
-
-def main() -> None:
-    """執行每日分析並輸出網站報告。"""
-    SITE_DIR.mkdir(parents=True, exist_ok=True)
-
-    results = []
-    errors = []
-
-    for item in load_watchlist():
-        try:
-            results.append(fetch_and_analyze(item))
-            print(f"完成：{item['ticker']}")
-        except Exception as error:
-            errors.append({
-                "ticker": item.get("ticker", "未知"),
-                "error": str(error)
-            })
-            print(f"失敗：{item.get('ticker')}，原因：{error}")
-
-    report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "timezone": "Asia/Taipei",
-        "method": "固定技術規則計分，非 LLM 自主推理",
-        "disclaimer": "資料可能延遲或缺漏；分析僅供研究，不構成投資建議，不會自動下單。",
-        "results": results,
-        "errors": errors
-    }
-
-    with REPORT_FILE.open("w", encoding="utf-8") as file:
-        json.dump(report, file, ensure_ascii=False, indent=2)
-
-    # 只推播有成功取得資料的結果。
-    if results:
-        lines = ["每日台股／美股技術分析", ""]
-        for item in results:
-            lines.append(
-                f"{item['market']}｜{item['name']} ({item['ticker']})\n"
-                f"收盤：{item['price']}｜漲跌：{item['change_pct']}%\n"
-                f"觀察：{item['signal']}｜RSI：{item['rsi14']}"
-            )
-        lines.append("")
-        lines.append("此為規則式技術觀察，非投資建議。")
-        send_telegram_message("\n\n".join(lines))
-
-    print(f"報告已輸出：{REPORT_FILE}")
-
-
-if __name__ == "__main__":
-    main()
+    close = data["Close"]
